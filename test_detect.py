@@ -1,145 +1,102 @@
-#encoding=utf-8
-from object_detection.utils import label_map_util
-from object_detection.utils import visualization_utils as vis_util 
-from object_detection.utils import ops as utils_ops
+# -*- coding: utf-8 -*-
 
+import matplotlib.pyplot as plt
 import numpy as np
 import os
-import six.moves.urllib as urllib
-import sys
-import tarfile
 import tensorflow as tf
-import zipfile
-
-from distutils.version import StrictVersion
-from collections import defaultdict
-from io import StringIO
-from matplotlib import pyplot as plt
+from object_detection.utils import label_map_util
+from object_detection.utils import visualization_utils as vis_util
 from PIL import Image
 
 
-PATH_TO_FROZEN_GRAPH="../pretrained/faster_rcnn_resnet101_fgvc_2018_07_19/frozen_inference_graph.pb"
-PATH_TO_LABELS="../datasets/pascal_label_map.pbtxt"
-
-PATH_TO_TEST_IMAGES_DIR="./images"
-TEST_IMAGE_PATH=[os.path.join(PATH_TO_TEST_IMAGES_DIR, 'images{}.jpg'.format(i)) for i in range(1,3)]
-IMAGE_SIZE = (12, 8)
-NUM_CLASSES=20
+#指定要使用的模型的路径  包含图结构，以及参数
+PATH_TO_PB = '../pretrained/ssd_mobilenet_v2_coco/frozen_inference_graph.pb'
+#测试图片所在的路径
+PATH_TO_TEST_IMAGES_DIR = './images'
+TEST_IMAGE_PATHS = [os.path.join(PATH_TO_TEST_IMAGES_DIR,'images{}.jpg'.format(i)) for i in range(1,3) ]
+#数据集对应的label mscoco_label_map.pbtxt文件保存了index到类别名的映射
+PATH_TO_LABELS = os.path.join('../datasets/','mscoco_label_map.pbtxt')
+NUM_CLASSES = 90
+#设置输出图片的大小
+IMAGE_SIZE = (12,8)
 
 def load_image_into_numpy_array(image):
-	(im_width, im_height) = image.size
-	return np.array(image.getdata()).reshape((im_height, im_width, 3)).astype(np.uint8)
+    '''
+    将图片转换为ndarray数组的形式
+    '''
+    im_width,im_height = image.size
+    return np.array(image.getdata()).reshape((im_height,im_width,3)).astype(np.uint0)
 
-"""
-def run_inference_for_single_image(image, graph):
-	with graph.as_default():
-		with tf.Session() as sess:
-			ops = tf.get_default_graph().get_operations()
-			all_tensor_names = {output.name for op in ops for output in op.outputs}
-			tensor_dict = {}
-			for key in ['num_detections', 'detection_boxes', 'detection_scores','detection_classes', 'detection_masks']:
-				tensor_name = key +"0"
-				if tensor_name in all_tensor_names:
-					tensor_dict[key] = tf.get_default_graph().get_tensor_by_name(tensor_name)
-			if 'detection_masks' in tensor_dict:
-					# The following processing is only for single image
-				detection_boxes = tf.squeeze(tensor_dict['detection_boxes'], [0])
-				detection_masks = tf.squeeze(tensor_dict['detection_masks'], [0])
-					# Reframe is required to translate mask from box coordinates to image coordinates and fit the image size.
-				real_num_detection = tf.cast(tensor_dict['num_detections'][0], tf.int32)
-				detection_boxes = tf.slice(detection_boxes, [0, 0], [real_num_detection, -1])
-				detection_masks = tf.slice(detection_masks, [0,0,0], [real_num_detection, -1, -1])
-				detection_masks_reframed = utils_ops.reframe_box_masks_to_image_masks(detection_masks, detection_boxes, image.shape[1], image.shape[2])
-				detection_masks_reframed = tf.cast(tf.greater(detection_masks_reframed, 0.5), tf.uint8)
-					# Follow the convention by adding back the batch dimension
-				tensor_dict['detection_masks'] = tf.expand_dims(detection_masks_reframed, 0)
+def load_detection_graph():
+	#重置图
+    tf.reset_default_graph()
 
-			image_tensor = tf.get_default_graph().get_tensor_by_name('image_tensor:0')
+    #重新定义一个图
+    output_graph_def = tf.GraphDef()
 
-				 # Run inference
-      		output_dict = sess.run(tensor_dict, feed_dict={image_tensor : image})
+    with tf.gfile.GFile(PATH_TO_PB,'rb') as fid:
+        #将*.pb文件读入serialized_graph
+        serialized_graph = fid.read()
+        #将serialized_graph的内容恢复到图中
+        output_graph_def.ParseFromString(serialized_graph)
+        #print(output_graph_def)
+        #将output_graph_def导入当前默认图中(加载模型)
+        tf.import_graph_def(output_graph_def,name='')
+    #使用默认图，此时已经加载了模型
+#    detection_graph = tf.get_default_graph()
+	return tf.get_default_graph()
 
-      			# all outputs are float32 numpy arrays, so convert types as appropriate
-     		output_dict['num_detections'] = int(output_dict['num_detections'][0])
-      		output_dict['detection_classes'] = output_dict['detection_classes'][0].astype(np.int64)
-      		output_dict['detection_boxes'] = output_dict['detection_boxes'][0]
-      		output_dict['detection_scores'] = output_dict['detection_scores'][0]
-      		if 'detection_masks' in output_dict:
-        		output_dict['detection_masks'] = output_dict['detection_masks'][0]
-	return output_dict
-"""
+def run_inference_for_single_image(image, graph, sess):
+	#将图片转换为numpy格式
+    image_np = load_image_into_numpy_array(image)
 
-def run_inference_for_single_image(image, graph):
-  with graph.as_default():
-    with tf.Session() as sess:
-      # Get handles to input and output tensors
-      ops = tf.get_default_graph().get_operations()
-      all_tensor_names = {output.name for op in ops for output in op.outputs}
-      tensor_dict = {}
-      for key in ['num_detections', 'detection_boxes', 'detection_scores','detection_classes', 'detection_masks']:
-        tensor_name = key + ':0'
-        if tensor_name in all_tensor_names:
-          tensor_dict[key] = tf.get_default_graph().get_tensor_by_name(
-              tensor_name)
-      if 'detection_masks' in tensor_dict:
-        # The following processing is only for single image
-        detection_boxes = tf.squeeze(tensor_dict['detection_boxes'], [0])
-        detection_masks = tf.squeeze(tensor_dict['detection_masks'], [0])
-        # Reframe is required to translate mask from box coordinates to image coordinates and fit the image size.
-        real_num_detection = tf.cast(tensor_dict['num_detections'][0], tf.int32)
-        detection_boxes = tf.slice(detection_boxes, [0, 0], [real_num_detection, -1])
-        detection_masks = tf.slice(detection_masks, [0, 0, 0], [real_num_detection, -1, -1])
-        detection_masks_reframed = utils_ops.reframe_box_masks_to_image_masks(
-            detection_masks, detection_boxes, image.shape[1], image.shape[2])
-        detection_masks_reframed = tf.cast(
-            tf.greater(detection_masks_reframed, 0.5), tf.uint8)
-        # Follow the convention by adding back the batch dimension
-        tensor_dict['detection_masks'] = tf.expand_dims(
-            detection_masks_reframed, 0)
-      image_tensor = tf.get_default_graph().get_tensor_by_name('image_tensor:0')
+    image_np_expanded = np.expand_dims(image_np,axis = 0)
 
-      # Run inference
-      output_dict = sess.run(tensor_dict,
-                             feed_dict={image_tensor: image})
+    image_tensor = graph.get_tensor_by_name('image_tensor:0')
 
-      # all outputs are float32 numpy arrays, so convert types as appropriate
-      output_dict['num_detections'] = int(output_dict['num_detections'][0])
-      output_dict['detection_classes'] = output_dict[
-          'detection_classes'][0].astype(np.int64)
-      output_dict['detection_boxes'] = output_dict['detection_boxes'][0]
-      output_dict['detection_scores'] = output_dict['detection_scores'][0]
-      if 'detection_masks' in output_dict:
-        output_dict['detection_masks'] = output_dict['detection_masks'][0]
-  return output_dict
+    #boxes用来显示识别结果
+    boxes = graph.get_tensor_by_name('detection_boxes:0')
 
+    #Echo score代表识别出的物体与标签匹配的相似程度，在类型标签后面
+    scores = graph.get_tensor_by_name('detection_scores:0')
+    classes = graph.get_tensor_by_name('detection_classes:0')
+    num_detections = graph.get_tensor_by_name('num_detections:0')
 
-detection_graph = tf.Graph()
-with detection_graph.as_default():
-	od_graph_def = tf.GraphDef()
-	with tf.gfile.GFile(PATH_TO_FROZEN_GRAPH, 'rb') as fid:
-		serialized_graph = fid.read()
-    	od_graph_def.ParseFromString(serialized_graph)
-    	tf.import_graph_def(od_graph_def, name='')
+    #开始检查
+#   boxes,scores,classes,num_detections = sess.run([boxes,scores,classes,num_detections],
+#                                                           feed_dict={image_tensor:image_np_expanded})
+    return sess.run([boxes,scores,classes,num_detections], feed_dict={image_tensor:image_np_expanded})
 
-category_index = label_map_util.create_category_index_from_labelmap(PATH_TO_LABELS, use_display_name=True)
+def inference_and_visualize_images():
+    
+    detection_graph = load_detection_graph()
 
-for image_path in TEST_IMAGE_PATH:
-	image = Image.open(image_path)
-	image_np = load_image_into_numpy_array(image)
-	# Expand dimensions since the model expects images to have shape: [1, None, None, 3]
-	image_np_expanded = np.expand_dims(image_np, axis=0)
-	# go
-	output_dict = run_inference_for_single_image(image_np_expanded, detection_graph)
-	# Visualization of the results of a detection.
-	vis_util.visualize_boxes_and_labels_on_image_array(
-      image_np,
-      output_dict['detection_boxes'],
-      output_dict['detection_classes'],
-      output_dict['detection_scores'],
-      category_index,
-      instance_masks=output_dict.get('detection_masks'),
-      use_normalized_coordinates=True,
-      line_thickness=8)
-	plt.figure(figsize=IMAGE_SIZE)
-	plt.imshow(image_np)
-	plt.show()
+    #载入coco数据集标签文件
+    label_map = label_map_util.load_labelmap(PATH_TO_LABELS)
+    categories = label_map_util.convert_label_map_to_categories(label_map,max_num_classes = NUM_CLASSES,use_display_name = True)
+    category_index = label_map_util.create_category_index(categories)
+
+    with tf.Session(graph=detection_graph) as sess:
+        for image_path in TEST_IMAGE_PATHS:
+            image = Image.open(image_path)
+            image_np = load_image_into_numpy_array(image)
+
+            boxes,scores,classes,num_detections = run_inference_for_single_image(image, detection_graph, sess)
+                        #可视化结果
+            vis_util.visualize_boxes_and_labels_on_image_array(
+                    image_np,
+                    np.squeeze(boxes),
+                    np.squeeze(classes).astype(np.int32),
+                    np.squeeze(scores),
+                    category_index,
+                    use_normalized_coordinates=True,
+                    line_thickness=8)
+            plt.figure(figsize=IMAGE_SIZE)
+            print(type(image_np))
+            print(image_np.shape)
+            image_np = np.array(image_np,dtype=np.uint8)
+            plt.imshow(image_np)
+            plt.show()
+
+if __name__ == '__main__':
+    inference_and_visualize_images()
