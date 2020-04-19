@@ -78,9 +78,10 @@ model.fit(x_train, y_train,
           verbose=1,
           callbacks=callbacks,
           validation_data=(x_test, y_test))
-tf.keras.models.save_model(model, saved_model_dir)
+tf.keras.experimental.export_saved_model(model, saved_model_dir)
 
 # tf lite
+"""
 converter = tf.lite.TFLiteConverter.from_saved_model(saved_model_dir)
 tflite_model = converter.convert()
 tflite_models_dir = pathlib.Path("./models/mnist_tflite_models/")
@@ -91,4 +92,13 @@ converter.optimizations = [tf.lite.Optimize.OPTIMIZE_FOR_SIZE]
 tflite_quant_model = converter.convert()
 tflite_model_quant_file = tflite_models_dir/"mnist_model_quant.tflite"
 tflite_model_quant_file.write_bytes(tflite_quant_model)
+"""
 
+infer_model = tf.keras.experimental.load_from_saved_model(saved_model_dir)
+
+model.compile( loss = tf.keras.losses.categorical_crossentropy,
+               optimizer = 'adam',
+               metrics = ['accuracy'] )
+
+_,acc = model.evaluate(x_test, y_test)
+print("Restore model, accuracy: {:5.2f}%".format(100*acc))
